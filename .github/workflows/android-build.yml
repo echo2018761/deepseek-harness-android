@@ -552,18 +552,35 @@ jobs:
           echo "installed git: ${GIT_SOURCE_PACKAGE}=${GIT_SOURCE_VERSION}"
           PPA_APT_OPTS=(-o "Dir::Etc::sourcelist=$EMPTY_SOURCES" -o "Dir::Etc::sourceparts=$PPA_SOURCEPARTS" -o APT::Architecture=amd64)
           sudo apt-get "${PPA_APT_OPTS[@]}" update -qq
-          # x64 runner 的 git 来自 git-core PPA，PPA 候选与已安装版本一致。
-          # arm runner（ubuntu-24.04-arm）上 PPA 不提供 arm64 二进制，已安装 git 是
-          # 发行版自带版本（PPA 候选会是更新的 2.56.x），此时必须回退到发行版 deb-src
-          # 按已安装版本精确拉取，否则下面的 dsc 版本一致性校验必然失败。
-          PPA_CANDIDATE="$(apt-cache "${PPA_APT_OPTS[@]}" showsrc git 2>/dev/null | awk '/^Version: /{print $2; exit}')"
-          if [ "$PPA_CANDIDATE" = "$GIT_SOURCE_VERSION" ]; then
-            echo "using git-core PPA source candidate ${PPA_CANDIDATE}"
-            SOURCE_APT_OPTS=("${PPA_APT_OPTS[@]}")
-            # PPA 场景沿用候选拉取（apt 在 arm runner 上无法按 epoch 版本解析 PPA 限定）。
-            SOURCE_REQUEST="$GIT_SOURCE_PACKAGE"
+          # 按已安装版本精确取源码。PPA 滚动发布后，runner 镜像里的二进制版本
+          # （2.55.0）可能已被 PPA 索引里的新版本（2.56.0）取代：
+          #  1) 先尝试 apt 按精确版本从 PPA 索引拉取；
+          #  2) 拉不到（旧版本已被 superseded）时，用 Launchpad API 取该版本仍保留
+          #     的源码文件 URL 直接下载（Launchpad 不删除已发布源码，Superseded 也可下载）；
+          #  3) 非 PPA 版本（理论上的镜像变化）回退发行版 deb-src。
+          SOURCE_REQUEST="${GIT_SOURCE_PACKAGE}=${GIT_SOURCE_VERSION}"
+          if [[ "$GIT_SOURCE_VERSION" == *ppa* ]]; then
+            if ! (cd "$GIT_SOURCE_ROOT/files" && apt-get "${PPA_APT_OPTS[@]}" source --download-only "$SOURCE_REQUEST"); then
+              echo "apt source index lacks ${GIT_SOURCE_VERSION}; fetching from Launchpad API"
+              LP_JSON="$(curl -fsSL --retry 3 -G 'https://api.launchpad.net/1.0/~git-core/+archive/ubuntu/ppa' \
+                --data-urlencode 'ws.op=getPublishedSources' \
+                --data-urlencode 'source_name=git' \
+                --data-urlencode "version_name=${GIT_SOURCE_VERSION}" \
+                --data-urlencode 'exact_match=true')"
+              echo "$LP_JSON" | jq -e '.entries | length == 1' >/dev/null
+              mapfile -t LP_URLS < <(echo "$LP_JSON" | jq -r '.entries[0].sourceFileUrls[]')
+              test "${#LP_URLS[@]}" -ge 2
+              for u in "${LP_URLS[@]}"; do
+                case "$u" in
+                  *.dsc|*.tar.gz|*.tar.xz|*.tar.bz2|*.diff.gz) ;;
+                  *) echo "skipping unexpected source file: $u"; continue ;;
+                esac
+                echo "fetch $u"
+                curl -fSL --retry 3 --connect-timeout 20 -o "$GIT_SOURCE_ROOT/files/$(basename "$u")" "$u"
+              done
+            fi
           else
-            echo "PPA candidate (${PPA_CANDIDATE:-none}) != installed (${GIT_SOURCE_VERSION}); using distro deb-src"
+            echo "installed git is not a PPA build; using distro deb-src"
             DISTRO_PARTS="$APT_WORK_ROOT/ubuntu-distro-sourceparts"
             rm -rf "$DISTRO_PARTS" && mkdir -p "$DISTRO_PARTS"
             for f in "$SOURCEPARTS"/*; do
@@ -571,11 +588,10 @@ jobs:
               grep -qi 'git-core/ppa' "$f" || cp "$f" "$DISTRO_PARTS/"
             done
             test -n "$(find "$DISTRO_PARTS" -type f -size +0c -print -quit)"
-            SOURCE_APT_OPTS=(-o "Dir::Etc::sourcelist=$EMPTY_SOURCES" -o "Dir::Etc::sourceparts=$DISTRO_PARTS")
-            sudo apt-get "${SOURCE_APT_OPTS[@]}" update -qq
-            SOURCE_REQUEST="${GIT_SOURCE_PACKAGE}=${GIT_SOURCE_VERSION}"
+            DISTRO_APT_OPTS=(-o "Dir::Etc::sourcelist=$EMPTY_SOURCES" -o "Dir::Etc::sourceparts=$DISTRO_PARTS")
+            sudo apt-get "${DISTRO_APT_OPTS[@]}" update -qq
+            (cd "$GIT_SOURCE_ROOT/files" && apt-get "${DISTRO_APT_OPTS[@]}" source --download-only "$SOURCE_REQUEST")
           fi
-          (cd "$GIT_SOURCE_ROOT/files" && apt-get "${SOURCE_APT_OPTS[@]}" source --download-only "$SOURCE_REQUEST")
           SOURCE_DSC="$(find "$GIT_SOURCE_ROOT/files" -maxdepth 1 -type f -name '*.dsc' -print -quit)"
           test -n "$SOURCE_DSC"
           SOURCE_NAME="$(sed -n 's/^Source: //p' "$SOURCE_DSC" | head -n 1)"
@@ -585,7 +601,7 @@ jobs:
           test -n "$(find "$GIT_SOURCE_ROOT/files" -maxdepth 1 -type f \( -name '*.orig.tar.*' -o -name '*.debian.tar.*' \) -print -quit)"
           dpkg-query -W -f='${Package}\t${Version}\t${Architecture}\n' \
             $(tr '\n' ' ' < "$NETWORK_PACKAGES_FILE") > "$GIT_SOURCE_ROOT/package-versions.txt"
-          printf '%s\n' "installed=${GIT_SOURCE_PACKAGE}=${GIT_SOURCE_VERSION}" "source=${SOURCE_REQUEST}=${SOURCE_VERSION}" > "$GIT_SOURCE_ROOT/README.txt"
+          printf '%s\n' "installed=${GIT_SOURCE_PACKAGE}=${GIT_SOURCE_VERSION}" "source=${SOURCE_REQUEST} (fetched dsc version ${SOURCE_VERSION})" > "$GIT_SOURCE_ROOT/README.txt"
           tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
             -cf "$GIT_SOURCE_TAR" -C "$GIT_SOURCE_ROOT" files package-versions.txt README.txt
           gzip -n -c "$GIT_SOURCE_TAR" > "$GIT_SOURCE_ARCHIVE"
