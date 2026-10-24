@@ -23,6 +23,10 @@ overrides:
   '@deepseek-ai/dsh-*': 0.2.1-rc.1
   # Pin pi-ai to the version upstream's lockfile uses so the exact-version patch key stays live.
   '@earendil-works/pi-ai': 1.1.0
+  # 安全补丁：undici 8.12.2 修复 GHSA-xjj6-f33q-929c（DoS，high）等 3 条公告；
+  # zod 4.6.6 修复 GHSA-mrhx-c7xc-m3w5（超大集合校验内存耗尽，high）。
+  undici: 8.12.2
+  zod: 4.6.6
 
 minimumReleaseAgeExclude:
   - '@deepseek-ai/dsh-acp-app@0.2.1-rc.1'
