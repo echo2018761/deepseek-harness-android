@@ -226,7 +226,7 @@ jobs:
             echo "downloading $name"
             local ok=0
             local IFS=','
-            for url in $url; do
+            for url in $url_list; do
               if curl -fL --retry 3 --retry-all-errors --retry-delay 3 --connect-timeout 20 -o "downloads/$archive" "$url"; then
                 ok=1
                 break
@@ -367,7 +367,7 @@ jobs:
         run: |
           curl -fL --retry 3 -o /tmp/ubuntu.tar.gz https://cdimage.ubuntu.com/ubuntu-base/releases/24.04/release/ubuntu-base-24.04.4-base-arm64.tar.gz
           curl -fL --retry 3 -o /tmp/node.tar.xz https://nodejs.org/dist/v24.19.0/node-v24.19.0-linux-arm64.tar.xz
-          echo "04207713ece899c3740890441ad3a7f0ded1101aca744e2b0f37ac7ff2  /tmp/ubuntu.tar.gz" | sha256sum -c -
+          echo "04207713ece899c3740823d33690441ad3a7f0ded1101aca744e2b0f37ac7ff2  /tmp/ubuntu.tar.gz" | sha256sum -c -
           echo "01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc  /tmp/node.tar.xz" | sha256sum -c -
 
       - name: Install toolchain (python standalone + apt static/dynamic binaries)
@@ -541,7 +541,7 @@ jobs:
               RELEASE_TAG="v${RUNTIME_VERSION}-personal"
             fi
             python3 scripts/build-embedded-runtime.py \
-              --ubuntu /tmp/ubuntu.tar.gz --ubuntu-sha256 04207713ece899c3740890441ad3a7f0ded1101aca744e2b0f37ac7ff2 \
+              --ubuntu /tmp/ubuntu.tar.gz --ubuntu-sha256 04207713ece899c3740823d33690441ad3a7f0ded1101aca744e2b0f37ac7ff2 \
               --node /tmp/node.tar.xz --node-sha256 01443c1e1a29e531ccad5a46fefa6df490d2189c49f7955904aecdbb0fe86fdc \
               --dsh-root /tmp/dsh-root --toolchain-dir /tmp/toolchain --runtime-version "${RUNTIME_VERSION}" \
               --network-tools-dir /tmp/network-tools \
