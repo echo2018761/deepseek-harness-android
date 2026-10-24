@@ -544,17 +544,37 @@ jobs:
               "$PPA_KEYRING" "$PPA_URI" "$PPA_SUITE" > "$PPA_SOURCEPARTS/derived.list"
           fi
           test -n "$(find "$PPA_SOURCEPARTS" -type f -size +0c -print -quit)"
-          SOURCE_APT_OPTS=(-o "Dir::Etc::sourcelist=$EMPTY_SOURCES" -o "Dir::Etc::sourceparts=$PPA_SOURCEPARTS" -o APT::Architecture=amd64)
-          sudo apt-get "${SOURCE_APT_OPTS[@]}" update -qq
+          # 已安装 git 二进制（rootfs 里实际携带的就是这个版本）的源码版本。
           GIT_SOURCE_RECORD="$(dpkg-query -W -f='${source:Package}\t${source:Version}\n' git)"
           IFS=$'\t' read -r GIT_SOURCE_PACKAGE GIT_SOURCE_VERSION <<< "$GIT_SOURCE_RECORD"
           test -n "$GIT_SOURCE_PACKAGE"
           test -n "$GIT_SOURCE_VERSION"
-          # apt's version-qualified source lookup cannot resolve this PPA's
-          # epoch-bearing version on the arm runner. Request the source package
-          # candidate, then require its .dsc Version to match the installed
-          # binary exactly before accepting any archive.
-          SOURCE_REQUEST="$GIT_SOURCE_PACKAGE"
+          echo "installed git: ${GIT_SOURCE_PACKAGE}=${GIT_SOURCE_VERSION}"
+          PPA_APT_OPTS=(-o "Dir::Etc::sourcelist=$EMPTY_SOURCES" -o "Dir::Etc::sourceparts=$PPA_SOURCEPARTS" -o APT::Architecture=amd64)
+          sudo apt-get "${PPA_APT_OPTS[@]}" update -qq
+          # x64 runner 的 git 来自 git-core PPA，PPA 候选与已安装版本一致。
+          # arm runner（ubuntu-24.04-arm）上 PPA 不提供 arm64 二进制，已安装 git 是
+          # 发行版自带版本（PPA 候选会是更新的 2.56.x），此时必须回退到发行版 deb-src
+          # 按已安装版本精确拉取，否则下面的 dsc 版本一致性校验必然失败。
+          PPA_CANDIDATE="$(apt-cache "${PPA_APT_OPTS[@]}" showsrc git 2>/dev/null | awk '/^Version: /{print $2; exit}')"
+          if [ "$PPA_CANDIDATE" = "$GIT_SOURCE_VERSION" ]; then
+            echo "using git-core PPA source candidate ${PPA_CANDIDATE}"
+            SOURCE_APT_OPTS=("${PPA_APT_OPTS[@]}")
+            # PPA 场景沿用候选拉取（apt 在 arm runner 上无法按 epoch 版本解析 PPA 限定）。
+            SOURCE_REQUEST="$GIT_SOURCE_PACKAGE"
+          else
+            echo "PPA candidate (${PPA_CANDIDATE:-none}) != installed (${GIT_SOURCE_VERSION}); using distro deb-src"
+            DISTRO_PARTS="$APT_WORK_ROOT/ubuntu-distro-sourceparts"
+            rm -rf "$DISTRO_PARTS" && mkdir -p "$DISTRO_PARTS"
+            for f in "$SOURCEPARTS"/*; do
+              [ -f "$f" ] || continue
+              grep -qi 'git-core/ppa' "$f" || cp "$f" "$DISTRO_PARTS/"
+            done
+            test -n "$(find "$DISTRO_PARTS" -type f -size +0c -print -quit)"
+            SOURCE_APT_OPTS=(-o "Dir::Etc::sourcelist=$EMPTY_SOURCES" -o "Dir::Etc::sourceparts=$DISTRO_PARTS")
+            sudo apt-get "${SOURCE_APT_OPTS[@]}" update -qq
+            SOURCE_REQUEST="${GIT_SOURCE_PACKAGE}=${GIT_SOURCE_VERSION}"
+          fi
           (cd "$GIT_SOURCE_ROOT/files" && apt-get "${SOURCE_APT_OPTS[@]}" source --download-only "$SOURCE_REQUEST")
           SOURCE_DSC="$(find "$GIT_SOURCE_ROOT/files" -maxdepth 1 -type f -name '*.dsc' -print -quit)"
           test -n "$SOURCE_DSC"
