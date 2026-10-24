@@ -402,10 +402,27 @@ jobs:
           # 从 runner（ubuntu-24.04-arm，与 rootfs 同发行版）取工具：
           # busybox-static 为静态链接；jq/unzip 动态依赖（glibc/libm 等）rootfs 已含
           sudo apt-get update -qq
-          # runner 镜像里的 git 可能滞后于 git-core PPA 已发布的候选版本（镜像滚动窗口）。
-          # 必须在 stage-network-tools 之前把 git 升到 PPA 候选：rootfs 携带的二进制
-          # 与后续“Package Ubuntu git corresponding source”拉取的源码必须同版本。
+          # 镜像构建后 runner 的 apt 源里可能已移除 git-core PPA 的二进制列表（镜像内
+          # 只留下烘焙好的 2.55.0），此时直接 apt-get install git 不会升级。显式补回
+          # PPA 的 arm64 二进制源（与“Package Ubuntu git corresponding source”步骤
+          # 同一把 PPA 密钥），把 host 与 rootfs 的 git 都升到 PPA 候选，保证二进制
+          # 与后续打包的 Debian 源码同版本。
+          PPA_KEYRING=/tmp/toolchain/git-core-ppa.gpg
+          : > "$PPA_KEYRING"
+          for key in F911AB184317630C59970973E363C90F8F1B6217 E1DD270288B4E6030699E45FA1715D88E1DF1F24; do
+            curl -fsSL --retry 3 --connect-timeout 20 \
+              "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x${key}&options=mr&exact=on" \
+              | gpg --batch --dearmor --yes >> "$PPA_KEYRING"
+          done
+          sudo install -d -m 0755 /etc/apt/keyrings
+          sudo install -m 0644 "$PPA_KEYRING" /etc/apt/keyrings/git-core-ppa.gpg
+          echo "deb [arch=arm64 signed-by=/etc/apt/keyrings/git-core-ppa.gpg] https://ppa.launchpadcontent.net/git-core/ppa/ubuntu noble main" \
+            | sudo tee /etc/apt/sources.list.d/git-core-ppa-binary.list >/dev/null
+          sudo apt-get update -qq
           sudo apt-get install -y -qq git
+          # fail-closed：升级必须真实生效；停留在旧版本就立即失败，不允许静默继续。
+          git --version
+          dpkg-query -W -f='git binary: ${Version}\n' git
           sudo apt-get install -y -qq --no-install-recommends busybox-static jq unzip
           cp /bin/busybox /tmp/toolchain/bin/busybox
           cp "$(command -v jq)" /tmp/toolchain/bin/jq
